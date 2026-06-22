@@ -1,0 +1,2 @@
+[functions.sync-indexes]
+verify_jwt = true
