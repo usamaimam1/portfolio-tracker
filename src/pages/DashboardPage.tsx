@@ -1,31 +1,76 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { StatCards } from '../components/StatCard'
+import { SortableTh } from '../components/SortableTh'
+import { WeightModeToggle } from '../components/WeightModeToggle'
 import { Card, EmptyState, ErrorBanner, LoadingState } from '../components/ui'
 import { usePortfolioContext } from '../context/PortfolioContext'
-import { formatPct, formatPrice, formatPkr, formatQty } from '../lib/portfolio'
+import { useTableSort } from '../hooks/useTableSort'
+import { indexLabel } from '../lib/index-labels'
+import { formatPct, formatPkr, formatQty, withWeightMode } from '../lib/portfolio'
+import type { ComparisonRow, Holding, WeightMode } from '../types'
+
+type DriftSortKey = 'symbol' | 'indexWeight' | 'portfolioWeight' | 'drift'
+type HoldingSortKey = 'symbol' | 'quantity' | 'value' | 'weight'
+
+const driftAccessors: Record<DriftSortKey, (r: ComparisonRow) => string | number> = {
+  symbol: (r) => r.symbol,
+  indexWeight: (r) => r.indexWeight,
+  portfolioWeight: (r) => r.portfolioWeight,
+  drift: (r) => r.drift,
+}
+
+const holdingAccessors: Record<HoldingSortKey, (h: Holding) => string | number> = {
+  symbol: (h) => h.symbol,
+  quantity: (h) => h.quantity,
+  value: (h) => h.marketValue,
+  weight: (h) => h.portfolioWeight,
+}
 
 export function DashboardPage() {
   const {
     summary,
     compliance,
     holdings,
-    kmi30Comparison,
+    comparison,
     benchmark,
+    portfolioSettings,
     loading,
     error,
     syncs,
     syncing,
     syncIndexes,
-    suggestInvest,
   } = usePortfolioContext()
 
-  const [investAmount, setInvestAmount] = useState(50000)
-  const buyPlan = suggestInvest(investAmount)
-  const topDrift = kmi30Comparison
-    .filter((r) => r.indexWeight > 0 && r.shariahCompliant)
-    .slice(0, 5)
+  const [weightMode, setWeightMode] = useState<WeightMode>('actual')
+  const rule = portfolioSettings.rules[benchmark]
+
+  const weightedComparison = useMemo(
+    () => withWeightMode(comparison, weightMode),
+    [comparison, weightMode],
+  )
+
+  const topDrift = useMemo(
+    () =>
+      [...weightedComparison]
+        .filter((r) => r.indexWeight > 0 && r.shariahCompliant)
+        .sort((a, b) => a.drift - b.drift)
+        .slice(0, 5),
+    [weightedComparison],
+  )
   const lastSync = syncs.find((s) => s.index_code === benchmark)
+
+  const driftSort = useTableSort<DriftSortKey>('drift', 'asc')
+  const holdingSort = useTableSort<HoldingSortKey>('value', 'desc')
+
+  const sortedDrift = useMemo(
+    () => driftSort.sort(topDrift, driftAccessors),
+    [topDrift, driftSort.sort],
+  )
+  const sortedHoldings = useMemo(
+    () => holdingSort.sort(holdings, holdingAccessors).slice(0, 5),
+    [holdings, holdingSort.sort],
+  )
 
   if (loading) return <LoadingState />
 
@@ -82,119 +127,50 @@ export function DashboardPage() {
         </Card>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Top underweight (Shariah)">
-          {topDrift.length === 0 ? (
-            <EmptyState message="Sync index data from PSX to see drift." />
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-slate-500">
-                  <th className="pb-2">Symbol</th>
-                  <th className="pb-2 text-right">Index</th>
-                  <th className="pb-2 text-right">Yours</th>
-                  <th className="pb-2 text-right">Drift</th>
+      <Card
+        title={`Top underweight (Shariah) · ${indexLabel(benchmark)}`}
+        action={<WeightModeToggle mode={weightMode} onChange={setWeightMode} />}
+      >
+        {weightMode === 'preferred' && (
+          <p className="mb-3 text-xs text-slate-500">
+            Drift vs your preferred target — top {rule.topNCount} names share{' '}
+            {rule.topNBudgetPct}% of the target profile.
+          </p>
+        )}
+        {topDrift.length === 0 ? (
+          <EmptyState message="Sync index data from PSX to see drift." />
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-slate-500">
+                <SortableTh label="Symbol" sortKey="symbol" activeKey={driftSort.sortKey} sortDir={driftSort.sortDir} onSort={driftSort.toggle} />
+                <SortableTh
+                  label={weightMode === 'actual' ? 'Index' : 'Target'}
+                  sortKey="indexWeight"
+                  activeKey={driftSort.sortKey}
+                  sortDir={driftSort.sortDir}
+                  onSort={driftSort.toggle}
+                  align="right"
+                />
+                <SortableTh label="Yours" sortKey="portfolioWeight" activeKey={driftSort.sortKey} sortDir={driftSort.sortDir} onSort={driftSort.toggle} align="right" />
+                <SortableTh label="Drift" sortKey="drift" activeKey={driftSort.sortKey} sortDir={driftSort.sortDir} onSort={driftSort.toggle} align="right" />
+              </tr>
+            </thead>
+            <tbody>
+              {sortedDrift.map((row) => (
+                <tr key={row.symbol} className="border-t border-slate-800">
+                  <td className="py-2 font-medium">{row.symbol}</td>
+                  <td className="py-2 text-right text-slate-400">{row.indexWeight.toFixed(2)}%</td>
+                  <td className="py-2 text-right">{row.portfolioWeight.toFixed(2)}%</td>
+                  <td className={`py-2 text-right ${row.drift < 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                    {formatPct(row.drift)}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {topDrift.map((row) => (
-                  <tr key={row.symbol} className="border-t border-slate-800">
-                    <td className="py-2 font-medium">{row.symbol}</td>
-                    <td className="py-2 text-right text-slate-400">{row.indexWeight.toFixed(2)}%</td>
-                    <td className="py-2 text-right">{row.portfolioWeight.toFixed(2)}%</td>
-                    <td className={`py-2 text-right ${row.drift < 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                      {formatPct(row.drift)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Card>
-
-        <Card title="Invest this month (KMI-30 · whole shares)">
-          <label className="block text-sm text-slate-400">
-            Budget (PKR)
-            <input
-              type="number"
-              min={0}
-              step={1000}
-              value={investAmount}
-              onChange={(e) => setInvestAmount(Number(e.target.value))}
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
-            />
-          </label>
-
-          {buyPlan.suggestions.length === 0 ? (
-            <p className="mt-4 text-sm text-slate-400">
-              {buyPlan.message ?? 'Sync indexes and add holdings to get suggestions.'}
-            </p>
-          ) : (
-            <div className="mt-4 space-y-4">
-              <div className="grid grid-cols-3 gap-2 rounded-lg bg-slate-950/60 p-3 text-center text-sm">
-                <div>
-                  <p className="text-slate-500">Spend</p>
-                  <p className="font-medium text-emerald-400">{formatPkr(buyPlan.totalSpend)}</p>
-                </div>
-                <div>
-                  <p className="text-slate-500">Leftover</p>
-                  <p className="font-medium text-amber-400">{formatPkr(buyPlan.leftover)}</p>
-                </div>
-                <div>
-                  <p className="text-slate-500">Orders</p>
-                  <p className="font-medium">{buyPlan.suggestions.length}</p>
-                </div>
-              </div>
-
-              <p className="text-xs text-slate-500">
-                Whole shares only. Leftover cash and any remaining gap carry into your next cycle.
-              </p>
-
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[520px] text-sm">
-                  <thead>
-                    <tr className="text-left text-slate-500">
-                      <th className="pb-2">Buy</th>
-                      <th className="pb-2 text-right">Shares</th>
-                      <th className="pb-2 text-right">Price</th>
-                      <th className="pb-2 text-right">Cost</th>
-                      <th className="pb-2 text-right">Drift after</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {buyPlan.suggestions.map((s) => (
-                      <tr key={s.symbol} className="border-t border-slate-800">
-                        <td className="py-2">
-                          <span className="font-medium">{s.symbol}</span>
-                          <span className="ml-1 text-slate-500">{s.name}</span>
-                        </td>
-                        <td className="py-2 text-right font-medium text-emerald-300">
-                          {formatQty(s.shares)}
-                        </td>
-                        <td className="py-2 text-right text-slate-400">
-                          {formatPrice(s.pricePerShare)}
-                        </td>
-                        <td className="py-2 text-right">{formatPkr(s.totalCost)}</td>
-                        <td
-                          className={`py-2 text-right ${
-                            s.driftAfter < -0.25
-                              ? 'text-amber-400'
-                              : s.driftAfter > 0.25
-                                ? 'text-sky-400'
-                                : 'text-emerald-400'
-                          }`}
-                        >
-                          {formatPct(s.driftAfter)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </Card>
-      </div>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
 
       <Card
         title="Top holdings"
@@ -210,14 +186,14 @@ export function DashboardPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-slate-500">
-                <th className="pb-2">Symbol</th>
-                <th className="pb-2 text-right">Qty</th>
-                <th className="pb-2 text-right">Value</th>
-                <th className="pb-2 text-right">Weight</th>
+                <SortableTh label="Symbol" sortKey="symbol" activeKey={holdingSort.sortKey} sortDir={holdingSort.sortDir} onSort={holdingSort.toggle} />
+                <SortableTh label="Qty" sortKey="quantity" activeKey={holdingSort.sortKey} sortDir={holdingSort.sortDir} onSort={holdingSort.toggle} align="right" />
+                <SortableTh label="Value" sortKey="value" activeKey={holdingSort.sortKey} sortDir={holdingSort.sortDir} onSort={holdingSort.toggle} align="right" />
+                <SortableTh label="Weight" sortKey="weight" activeKey={holdingSort.sortKey} sortDir={holdingSort.sortDir} onSort={holdingSort.toggle} align="right" />
               </tr>
             </thead>
             <tbody>
-              {holdings.slice(0, 5).map((h) => (
+              {sortedHoldings.map((h) => (
                 <tr key={h.symbol} className="border-t border-slate-800">
                   <td className="py-2 font-medium">{h.symbol}</td>
                   <td className="py-2 text-right text-slate-400">{formatQty(h.quantity)}</td>

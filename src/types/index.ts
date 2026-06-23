@@ -59,17 +59,27 @@ export interface Holding {
   shariahCompliant: boolean
 }
 
+export type WeightMode = 'actual' | 'preferred'
+
 export interface ComparisonRow {
   symbol: string
   name: string
+  /** Active reference weight (set via withWeightMode). */
   indexWeight: number
+  /** Raw PSX index weight. */
+  actualIndexWeight: number
+  /** Target weight from Settings (top-N concentration). */
+  preferredIndexWeight: number
   portfolioWeight: number
   drift: number
+  actualDrift: number
+  preferredDrift: number
   quantity: number
   marketValue: number
   indexPrice: number
   owned: boolean
   shariahCompliant: boolean
+  inTopN: boolean
 }
 
 export interface PortfolioSummary {
@@ -108,6 +118,13 @@ export interface ShareBuyPlan {
   leftover: number
   suggestions: ShareBuySuggestion[]
   message?: string
+  topNMetrics?: {
+    topNCount: number
+    topNBudgetPct: number
+    indexTopNWeightPct: number
+    portfolioTopNWeightPct: number
+    plannedTopNSpendPct: number
+  }
 }
 
 export interface ParsedConstituent {

@@ -6,6 +6,8 @@ const nav = [
   { to: '/portfolio', label: 'Holdings' },
   { to: '/transactions', label: 'Transactions' },
   { to: '/compare', label: 'Compare' },
+  { to: '/planner', label: 'Planner' },
+  { to: '/settings', label: 'Settings' },
   { to: '/indexes', label: 'Index Data' },
 ]
 

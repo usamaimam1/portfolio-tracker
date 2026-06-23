@@ -1,19 +1,63 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Card, EmptyState, LoadingState } from '../components/ui'
 import { ShariahBadge } from '../components/ShariahBadge'
+import { SortableTh } from '../components/SortableTh'
+import { WeightModeToggle } from '../components/WeightModeToggle'
 import { usePortfolioContext } from '../context/PortfolioContext'
-import { filterByCompliance, formatPct, formatPkr, formatQty } from '../lib/portfolio'
-import type { BenchmarkIndex, ComplianceFilter } from '../types'
+import { useTableSort } from '../hooks/useTableSort'
+import { indexLabel } from '../lib/index-labels'
+import { filterByCompliance, formatPct, formatPkr, formatQty, withWeightMode } from '../lib/portfolio'
+import type { BenchmarkIndex, ComparisonRow, ComplianceFilter, WeightMode } from '../types'
+
+type CompareSortKey =
+  | 'symbol'
+  | 'name'
+  | 'compliance'
+  | 'indexWeight'
+  | 'portfolioWeight'
+  | 'drift'
+  | 'quantity'
+  | 'value'
+  | 'indexPrice'
+
+const compareAccessors: Record<
+  CompareSortKey,
+  (r: ComparisonRow) => string | number | boolean | null
+> = {
+  symbol: (r) => r.symbol,
+  name: (r) => r.name,
+  compliance: (r) => r.shariahCompliant,
+  indexWeight: (r) => r.indexWeight,
+  portfolioWeight: (r) => r.portfolioWeight,
+  drift: (r) => r.drift,
+  quantity: (r) => r.quantity,
+  value: (r) => r.marketValue,
+  indexPrice: (r) => r.indexPrice,
+}
 
 export function ComparePage() {
-  const { comparison, benchmark, setBenchmarkIndex, loading, constituents } = usePortfolioContext()
+  const { comparison, benchmark, setBenchmarkIndex, loading, constituents, portfolioSettings } =
+    usePortfolioContext()
   const [complianceFilter, setComplianceFilter] = useState<ComplianceFilter>('all')
+  const [weightMode, setWeightMode] = useState<WeightMode>('actual')
+  const { sortKey, sortDir, toggle, sort } = useTableSort<CompareSortKey>('drift', 'asc')
+
+  const rule = portfolioSettings.rules[benchmark]
+  const weightedComparison = useMemo(
+    () => withWeightMode(comparison, weightMode),
+    [comparison, weightMode],
+  )
+
+  const filtered = useMemo(
+    () => filterByCompliance(weightedComparison, complianceFilter),
+    [weightedComparison, complianceFilter],
+  )
+  const sorted = useMemo(() => sort(filtered, compareAccessors), [filtered, sort, sortKey, sortDir])
 
   if (loading) return <LoadingState />
-
-  const filtered = filterByCompliance(comparison, complianceFilter)
-  const shariahCount = comparison.filter((r) => r.shariahCompliant).length
-  const nonShariahCount = comparison.length - shariahCount
+  const shariahCount = weightedComparison.filter((r) => r.shariahCompliant).length
+  const nonShariahCount = weightedComparison.length - shariahCount
+  const refWeightLabel = weightMode === 'actual' ? 'Index wt' : 'Target wt'
 
   return (
     <div className="space-y-6">
@@ -24,7 +68,8 @@ export function ComparePage() {
             KMI-30 stocks are Shariah compliant. KSE-100-only stocks are marked non-compliant.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2">
+          <WeightModeToggle mode={weightMode} onChange={setWeightMode} />
           <div className="flex rounded-lg border border-slate-700 p-1">
             {(['KMI30', 'KSE100'] as BenchmarkIndex[]).map((code) => (
               <button
@@ -65,10 +110,21 @@ export function ComparePage() {
       </div>
 
       <p className="text-sm text-slate-500">
-        {shariahCount} Shariah compliant · {nonShariahCount} non-compliant in this index view
+        {shariahCount} Shariah compliant · {nonShariahCount} non-compliant
+        {weightMode === 'preferred' && (
+          <>
+            {' '}
+            · Preferred: top {rule.topNCount} get {rule.topNBudgetPct}% target (
+            {indexLabel(benchmark)})
+          </>
+        )}
       </p>
 
-      <Card title={`${benchmark === 'KMI30' ? 'KMI-30' : 'KSE-100'} comparison`}>
+      <Card
+        title={`${benchmark === 'KMI30' ? 'KMI-30' : 'KSE-100'} comparison · ${
+          weightMode === 'actual' ? 'actual index weights' : 'preferred targets'
+        }`}
+      >
         {constituents.length === 0 ? (
           <EmptyState message="No index data yet. Go to Index Data and sync from PSX." />
         ) : (
@@ -76,24 +132,26 @@ export function ComparePage() {
             <table className="w-full min-w-[880px] text-sm">
               <thead>
                 <tr className="text-left text-slate-500">
-                  <th className="pb-2">Symbol</th>
-                  <th className="pb-2">Name</th>
-                  <th className="pb-2">Compliance</th>
-                  <th className="pb-2 text-right">Index wt</th>
-                  <th className="pb-2 text-right">Your wt</th>
-                  <th className="pb-2 text-right">Drift</th>
-                  <th className="pb-2 text-right">Qty</th>
-                  <th className="pb-2 text-right">Value</th>
-                  <th className="pb-2 text-right">Index price</th>
+                  <SortableTh label="Symbol" sortKey="symbol" activeKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortableTh label="Name" sortKey="name" activeKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortableTh label="Compliance" sortKey="compliance" activeKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortableTh label={refWeightLabel} sortKey="indexWeight" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Your wt" sortKey="portfolioWeight" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Drift" sortKey="drift" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Qty" sortKey="quantity" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Value" sortKey="value" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Index price" sortKey="indexPrice" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((row) => (
+                {sorted.map((row) => (
                   <tr
                     key={row.symbol}
                     className={`border-t border-slate-800 ${
-                      !row.shariahCompliant && row.indexWeight > 0 ? 'bg-rose-500/5' : ''
-                    } ${!row.owned && row.indexWeight > 0 && row.shariahCompliant ? 'bg-amber-500/5' : ''}`}
+                      !row.shariahCompliant && row.actualIndexWeight > 0 ? 'bg-rose-500/5' : ''
+                    } ${!row.owned && row.indexWeight > 0 && row.shariahCompliant ? 'bg-amber-500/5' : ''} ${
+                      weightMode === 'preferred' && row.inTopN ? 'ring-1 ring-inset ring-emerald-500/20' : ''
+                    }`}
                   >
                     <td className="py-2 font-medium">{row.symbol}</td>
                     <td className="max-w-[160px] truncate py-2 text-slate-400">{row.name}</td>

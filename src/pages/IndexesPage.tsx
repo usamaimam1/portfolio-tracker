@@ -1,7 +1,18 @@
+import { useMemo } from 'react'
 import { Card, EmptyState, ErrorBanner, LoadingState } from '../components/ui'
+import { SortableTh } from '../components/SortableTh'
 import { usePortfolioContext } from '../context/PortfolioContext'
+import { useTableSort } from '../hooks/useTableSort'
 import { indexLabel } from '../lib/index-labels'
 import { formatPrice } from '../lib/portfolio'
+import type { IndexSync } from '../types'
+
+type SyncSortKey = 'index' | 'syncedAt'
+
+const syncAccessors: Record<SyncSortKey, (s: IndexSync) => string> = {
+  index: (s) => indexLabel(s.index_code),
+  syncedAt: (s) => s.synced_at,
+}
 
 export function IndexesPage() {
   const {
@@ -14,6 +25,9 @@ export function IndexesPage() {
     loading,
     uncoveredHoldings,
   } = usePortfolioContext()
+
+  const { sortKey, sortDir, toggle, sort } = useTableSort<SyncSortKey>('syncedAt', 'desc')
+  const sortedSyncs = useMemo(() => sort(syncs, syncAccessors), [syncs, sort])
 
   if (loading) return <LoadingState />
 
@@ -143,12 +157,12 @@ export function IndexesPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-slate-500">
-                <th className="pb-2">Index</th>
-                <th className="pb-2">Synced at</th>
+                <SortableTh label="Index" sortKey="index" activeKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortableTh label="Synced at" sortKey="syncedAt" activeKey={sortKey} sortDir={sortDir} onSort={toggle} />
               </tr>
             </thead>
             <tbody>
-              {syncs.map((s) => (
+              {sortedSyncs.map((s) => (
                 <tr key={s.id} className="border-t border-slate-800">
                   <td className="py-2">{indexLabel(s.index_code)}</td>
                   <td className="py-2 text-slate-400">{new Date(s.synced_at).toLocaleString()}</td>

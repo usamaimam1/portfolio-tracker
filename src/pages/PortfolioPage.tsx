@@ -1,17 +1,50 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Card, EmptyState, LoadingState } from '../components/ui'
 import { ShariahBadge } from '../components/ShariahBadge'
+import { SortableTh } from '../components/SortableTh'
 import { usePortfolioContext } from '../context/PortfolioContext'
+import { useTableSort } from '../hooks/useTableSort'
 import { filterByCompliance, formatPct, formatPkr, formatQty } from '../lib/portfolio'
-import type { ComplianceFilter } from '../types'
+import type { ComplianceFilter, Holding } from '../types'
+
+type HoldingsSortKey =
+  | 'symbol'
+  | 'compliance'
+  | 'quantity'
+  | 'avgCost'
+  | 'price'
+  | 'value'
+  | 'weight'
+  | 'pnl'
+  | 'day'
+
+const holdingsAccessors: Record<HoldingsSortKey, (h: Holding) => string | number | boolean | null> = {
+  symbol: (h) => h.symbol,
+  compliance: (h) => h.shariahCompliant,
+  quantity: (h) => h.quantity,
+  avgCost: (h) => h.avgCost,
+  price: (h) => h.currentPrice,
+  value: (h) => h.marketValue,
+  weight: (h) => h.portfolioWeight,
+  pnl: (h) => h.unrealizedPnl,
+  day: (h) => h.dayChangePct,
+}
 
 export function PortfolioPage() {
   const { holdings, summary, compliance, loading } = usePortfolioContext()
   const [complianceFilter, setComplianceFilter] = useState<ComplianceFilter>('all')
+  const { sortKey, sortDir, toggle, sort } = useTableSort<HoldingsSortKey>('value', 'desc')
+
+  const filtered = useMemo(
+    () => filterByCompliance(holdings, complianceFilter),
+    [holdings, complianceFilter],
+  )
+  const sorted = useMemo(
+    () => sort(filtered, holdingsAccessors),
+    [filtered, sort],
+  )
 
   if (loading) return <LoadingState />
-
-  const filtered = filterByCompliance(holdings, complianceFilter)
 
   return (
     <div className="space-y-6">
@@ -76,19 +109,19 @@ export function PortfolioPage() {
             <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="text-left text-slate-500">
-                  <th className="pb-2">Symbol</th>
-                  <th className="pb-2">Compliance</th>
-                  <th className="pb-2 text-right">Qty</th>
-                  <th className="pb-2 text-right">Avg cost</th>
-                  <th className="pb-2 text-right">Price</th>
-                  <th className="pb-2 text-right">Value</th>
-                  <th className="pb-2 text-right">Weight</th>
-                  <th className="pb-2 text-right">P&L</th>
-                  <th className="pb-2 text-right">Day</th>
+                  <SortableTh label="Symbol" sortKey="symbol" activeKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortableTh label="Compliance" sortKey="compliance" activeKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortableTh label="Qty" sortKey="quantity" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Avg cost" sortKey="avgCost" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Price" sortKey="price" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Value" sortKey="value" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Weight" sortKey="weight" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="P&L" sortKey="pnl" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Day" sortKey="day" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((h) => (
+                {sorted.map((h) => (
                   <tr
                     key={h.symbol}
                     className={`border-t border-slate-800 ${!h.shariahCompliant ? 'bg-rose-500/5' : ''}`}

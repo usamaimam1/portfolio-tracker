@@ -2,6 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { invokeSyncIndexes } from '../lib/sync-indexes'
 import {
+  computeTopNIndexMetrics,
+  DEFAULT_PORTFOLIO_SETTINGS,
+  getPlannerConstraints,
+  parsePortfolioSettings,
+  serializePortfolioSettings,
+  type PortfolioSettings,
+} from '../lib/portfolio-settings'
+import {
   buildComparison,
   buildPriceMap,
   buildShariahSymbolSet,
@@ -78,11 +86,11 @@ async function loadShariahSymbols(): Promise<Set<string>> {
   return buildShariahSymbolSet(kmi30)
 }
 
-async function loadKmi30Constituents(): Promise<IndexConstituent[]> {
+async function loadBenchmarkConstituents(code: BenchmarkIndex): Promise<IndexConstituent[]> {
   const { data: latestSync } = await supabase
     .from('index_syncs')
     .select('id')
-    .eq('index_code', 'KMI30')
+    .eq('index_code', code)
     .order('synced_at', { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -98,12 +106,31 @@ async function loadKmi30Constituents(): Promise<IndexConstituent[]> {
   return (rows as IndexConstituent[]) ?? []
 }
 
+async function loadKmi30Constituents(): Promise<IndexConstituent[]> {
+  return loadBenchmarkConstituents('KMI30')
+}
+
+async function loadPortfolioSettings(userId: string) {
+  const { data } = await supabase
+    .from('portfolio_settings')
+    .select('primary_index, rules')
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  return parsePortfolioSettings(data)
+}
+
 export function usePortfolio(userId: string | undefined) {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [prices, setPrices] = useState<StockPrice[]>([])
   const [syncs, setSyncs] = useState<IndexSync[]>([])
   const [constituents, setConstituents] = useState<IndexConstituent[]>([])
   const [kmi30Constituents, setKmi30Constituents] = useState<IndexConstituent[]>([])
+  const [kse100Constituents, setKse100Constituents] = useState<IndexConstituent[]>([])
+  const [portfolioSettings, setPortfolioSettings] = useState<PortfolioSettings>(
+    DEFAULT_PORTFOLIO_SETTINGS,
+  )
+  const [settingsSaving, setSettingsSaving] = useState(false)
   const [benchmarkSymbols, setBenchmarkSymbols] = useState<Set<string>>(new Set())
   const [shariahSymbols, setShariahSymbols] = useState<Set<string>>(new Set())
   const [benchmark, setBenchmark] = useState<BenchmarkIndex>('KMI30')
@@ -115,16 +142,51 @@ export function usePortfolio(userId: string | undefined) {
   const holdings = computeHoldings(transactions, priceMap, shariahSymbols)
   const summary: PortfolioSummary = summarizePortfolio(holdings)
   const compliance: ComplianceSummary = summarizeCompliance(holdings)
-  const comparison: ComparisonRow[] = buildComparison(
-    constituents,
-    holdings,
-    priceMap,
-    shariahSymbols,
+  const comparison: ComparisonRow[] = useMemo(
+    () =>
+      buildComparison(
+        constituents,
+        holdings,
+        priceMap,
+        shariahSymbols,
+        portfolioSettings.rules[benchmark],
+      ),
+    [constituents, holdings, priceMap, shariahSymbols, portfolioSettings.rules, benchmark],
   )
   const kmi30Comparison = useMemo(
-    () => buildComparison(kmi30Constituents, holdings, priceMap, shariahSymbols),
-    [kmi30Constituents, holdings, priceMap, shariahSymbols],
+    () =>
+      buildComparison(
+        kmi30Constituents,
+        holdings,
+        priceMap,
+        shariahSymbols,
+        portfolioSettings.rules.KMI30,
+      ),
+    [kmi30Constituents, holdings, priceMap, shariahSymbols, portfolioSettings.rules],
   )
+  const kse100Comparison = useMemo(
+    () =>
+      buildComparison(
+        kse100Constituents,
+        holdings,
+        priceMap,
+        shariahSymbols,
+        portfolioSettings.rules.KSE100,
+      ),
+    [kse100Constituents, holdings, priceMap, shariahSymbols, portfolioSettings.rules],
+  )
+  const primaryComparison = useMemo(() => {
+    return portfolioSettings.primaryIndex === 'KSE100' ? kse100Comparison : kmi30Comparison
+  }, [portfolioSettings.primaryIndex, kse100Comparison, kmi30Comparison])
+
+  const constituentsByIndex = useMemo(
+    (): Record<BenchmarkIndex, IndexConstituent[]> => ({
+      KMI30: kmi30Constituents,
+      KSE100: kse100Constituents,
+    }),
+    [kmi30Constituents, kse100Constituents],
+  )
+
   const uncoveredHoldings = useMemo(
     () => holdings.filter((h) => !benchmarkSymbols.has(h.symbol)),
     [holdings, benchmarkSymbols],
@@ -158,7 +220,7 @@ export function usePortfolio(userId: string | undefined) {
     setLoading(true)
     setError(null)
 
-    const [txRes, priceRes, syncRes, kmi30Rows, benchmarkSymbolSet, shariahSymbolSet] =
+    const [txRes, priceRes, syncRes, kmi30Rows, kse100Rows, benchmarkSymbolSet, shariahSymbolSet, settings] =
       await Promise.all([
       supabase
         .from('transactions')
@@ -172,8 +234,10 @@ export function usePortfolio(userId: string | undefined) {
         .order('synced_at', { ascending: false })
         .limit(20),
       loadKmi30Constituents(),
+      loadBenchmarkConstituents('KSE100'),
       loadBenchmarkSymbols(),
       loadShariahSymbols(),
+      loadPortfolioSettings(userId),
     ])
 
     if (txRes.error) setError(txRes.error.message)
@@ -188,8 +252,10 @@ export function usePortfolio(userId: string | undefined) {
     )
     setSyncs((syncRes.data as IndexSync[]) ?? [])
     setKmi30Constituents(kmi30Rows)
+    setKse100Constituents(kse100Rows)
     setBenchmarkSymbols(benchmarkSymbolSet)
     setShariahSymbols(shariahSymbolSet)
+    setPortfolioSettings(settings)
     await loadBenchmark(benchmark)
     setLoading(false)
   }, [userId, benchmark, loadBenchmark])
@@ -239,7 +305,39 @@ export function usePortfolio(userId: string | undefined) {
   const syncIndexes = () => runSync('benchmark')
   const syncListings = () => runSync('listings')
 
-  const suggestInvest = (amount: number) => suggestShareBuys(amount, kmi30Comparison, true)
+  const savePortfolioSettings = async (next: PortfolioSettings) => {
+    if (!userId) return { error: 'Not signed in' }
+    setSettingsSaving(true)
+    const payload = { user_id: userId, ...serializePortfolioSettings(next) }
+    const { error: upsertError } = await supabase
+      .from('portfolio_settings')
+      .upsert(payload, { onConflict: 'user_id' })
+
+    setSettingsSaving(false)
+    if (upsertError) return { error: upsertError.message }
+
+    setPortfolioSettings(next)
+    if (next.primaryIndex !== portfolioSettings.primaryIndex) {
+      await loadBenchmark(next.primaryIndex)
+      setBenchmark(next.primaryIndex)
+    }
+    return { error: null }
+  }
+
+  const suggestInvest = (amount: number) => {
+    const constraints = getPlannerConstraints(portfolioSettings)
+    const constituents = constituentsByIndex[portfolioSettings.primaryIndex]
+    const indexTopN = computeTopNIndexMetrics(constituents, constraints.topNCount).indexWeightPct
+
+    return suggestShareBuys(
+      amount,
+      primaryComparison,
+      true,
+      constraints,
+      holdings,
+      indexTopN,
+    )
+  }
 
   return {
     transactions,
@@ -253,6 +351,11 @@ export function usePortfolio(userId: string | undefined) {
     compliance,
     comparison,
     kmi30Comparison,
+    kse100Comparison,
+    primaryComparison,
+    portfolioSettings,
+    constituentsByIndex,
+    settingsSaving,
     uncoveredHoldings,
     loading,
     syncing,
@@ -263,6 +366,7 @@ export function usePortfolio(userId: string | undefined) {
     syncIndexes,
     syncListings,
     suggestInvest,
+    savePortfolioSettings,
     refresh,
   }
 }

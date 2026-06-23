@@ -1,13 +1,27 @@
 import { useMemo, useState } from 'react'
 import { SymbolCombobox } from '../components/SymbolCombobox'
+import { SortableTh } from '../components/SortableTh'
 import { Card, EmptyState, ErrorBanner, LoadingState } from '../components/ui'
 import { usePortfolioContext } from '../context/PortfolioContext'
+import { useTableSort } from '../hooks/useTableSort'
 import { formatPkr, formatQty } from '../lib/portfolio'
-import type { TransactionType } from '../types'
+import type { Transaction, TransactionType } from '../types'
+
+type TxSortKey = 'date' | 'symbol' | 'type' | 'quantity' | 'price' | 'total'
+
+const txAccessors: Record<TxSortKey, (tx: Transaction) => string | number> = {
+  date: (tx) => tx.trade_date,
+  symbol: (tx) => tx.symbol,
+  type: (tx) => tx.type,
+  quantity: (tx) => tx.quantity,
+  price: (tx) => tx.price_per_share,
+  total: (tx) => tx.quantity * tx.price_per_share + (tx.fees ?? 0),
+}
 
 export function TransactionsPage() {
   const { transactions, prices, loading, error, addTransaction, deleteTransaction } =
     usePortfolioContext()
+  const { sortKey, sortDir, toggle, sort } = useTableSort<TxSortKey>('date', 'desc')
   const [formError, setFormError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -30,6 +44,11 @@ export function TransactionsPage() {
         }))
         .sort((a, b) => a.symbol.localeCompare(b.symbol)),
     [prices],
+  )
+
+  const sortedTransactions = useMemo(
+    () => sort(transactions, txAccessors),
+    [transactions, sort],
   )
 
   const handleSymbolChange = (next: string, option: (typeof symbolOptions)[number] | null) => {
@@ -184,17 +203,17 @@ export function TransactionsPage() {
             <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="text-left text-slate-500">
-                  <th className="pb-2">Date</th>
-                  <th className="pb-2">Symbol</th>
-                  <th className="pb-2">Type</th>
-                  <th className="pb-2 text-right">Qty</th>
-                  <th className="pb-2 text-right">Price</th>
-                  <th className="pb-2 text-right">Total</th>
+                  <SortableTh label="Date" sortKey="date" activeKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortableTh label="Symbol" sortKey="symbol" activeKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortableTh label="Type" sortKey="type" activeKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortableTh label="Qty" sortKey="quantity" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Price" sortKey="price" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortableTh label="Total" sortKey="total" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
                   <th className="pb-2"></th>
                 </tr>
               </thead>
               <tbody>
-                {transactions.map((tx) => {
+                {sortedTransactions.map((tx) => {
                   const total = tx.quantity * tx.price_per_share + (tx.fees ?? 0)
                   return (
                     <tr key={tx.id} className="border-t border-slate-800">
