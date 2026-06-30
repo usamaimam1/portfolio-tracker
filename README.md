@@ -6,7 +6,7 @@ Track your Pakistan Stock Exchange investments against **KMI-30** and **KSE-100*
 
 - **Frontend:** React + Vite + Tailwind CSS → [Netlify](https://www.netlify.com)
 - **Backend:** [Supabase](https://supabase.com) (Postgres, Auth, Edge Functions)
-- **Index sync:** Supabase Edge Function fetches live data from [PSX DPS](https://dps.psx.com.pk/indices/KMI30)
+- **Index sync:** Netlify Function fetches live data from [PSX DPS](https://dps.psx.com.pk/indices/KMI30) (PSX blocks Supabase Edge datacenter IPs with HTTP 462)
 
 ## Setup
 
@@ -17,46 +17,44 @@ Track your Pakistan Stock Exchange investments against **KMI-30** and **KSE-100*
 3. Enable Email auth under Authentication → Providers
 4. Copy your project URL and anon key into `.env.local`
 
-### 2. Deploy the Edge Function
-
-Install the [Supabase CLI](https://supabase.com/docs/guides/cli), link your project, then deploy:
-
-```bash
-supabase login
-supabase link --project-ref your-project-ref
-supabase functions deploy sync-indexes
-```
-
-The function uses `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` automatically — no extra secrets needed.
-
-### 3. Local development
+### 2. Local development
 
 ```bash
 cp .env.example .env.local
 # Fill in VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY
+# For sync: also add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (server-only)
 
 npm install
+```
+
+**App only** (no index sync):
+
+```bash
 npm run dev
 ```
 
-To test index sync locally, run the Edge Function alongside the app:
+**App + index sync** (Netlify dev proxies `/api` to the function):
 
 ```bash
-supabase functions serve sync-indexes --env-file .env.local
+netlify dev
 ```
 
-The app calls `supabase.functions.invoke('sync-indexes')` — no Netlify function or `/api` proxy required.
-
-### 4. Deploy to Netlify
+### 3. Deploy to Netlify
 
 1. Connect this repo to Netlify
-2. Build command: `npm run build`
+2. Build command: `npm run build` (from `netlify.toml`)
 3. Publish directory: `dist`
 4. Set environment variables:
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY`
+   - `SUPABASE_URL` (same project URL)
+   - `SUPABASE_SERVICE_ROLE_KEY` (Site settings → Environment variables — **never** prefix with `VITE_`)
 
-No service role key is needed on Netlify — it stays in Supabase only.
+The sync endpoint is `POST /api/sync-indexes` (rewritten to the Netlify function). The service role key is only used server-side in that function.
+
+### Optional: Supabase Edge Function
+
+`supabase/functions/sync-indexes` is kept for reference but **cannot fetch PSX** from Supabase’s network (HTTP 462). Use the Netlify function for production sync.
 
 ## Features
 

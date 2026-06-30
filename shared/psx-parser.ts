@@ -1,5 +1,3 @@
-import { normalizeSymbol } from './symbols.ts'
-
 export interface ParsedRow {
   symbol: string
   name: string
@@ -10,8 +8,12 @@ export interface ParsedRow {
   market_cap_m: number | null
 }
 
+export function normalizeSymbol(symbol: string): string {
+  return symbol.replace(/XD$/i, '').trim().toUpperCase()
+}
+
 /** PSX WAF blocks datacenter bots — mimic a real browser request. */
-const PSX_FETCH_HEADERS: Record<string, string> = {
+export const PSX_FETCH_HEADERS: Record<string, string> = {
   'User-Agent':
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -78,7 +80,7 @@ export function parsePsxIndexHtml(html: string): ParsedRow[] {
 export async function fetchIndexRows(url: string): Promise<ParsedRow[]> {
   const res = await fetch(url, { headers: PSX_FETCH_HEADERS })
   if (!res.ok) {
-    throw new Error(`Failed to fetch ${url}: ${res.status}. PSX blocks Supabase Edge — use Netlify /api/sync-indexes instead.`)
+    throw new Error(`Failed to fetch ${url}: ${res.status}`)
   }
   const html = await res.text()
   const rows = parsePsxIndexHtml(html)
