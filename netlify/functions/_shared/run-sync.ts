@@ -3,7 +3,7 @@ import {
   fetchIndexRows,
   normalizeSymbol,
   type ParsedRow,
-} from '../../shared/psx-parser.ts'
+} from './psx-parser.ts'
 
 export const ALL_INDEXES = [
   { code: 'KMI30', url: 'https://dps.psx.com.pk/indices/KMI30' },
