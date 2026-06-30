@@ -3,16 +3,119 @@ import { Card, ErrorBanner, LoadingState } from '../components/ui'
 import { usePortfolioContext } from '../context/PortfolioContext'
 import { indexLabel } from '../lib/index-labels'
 import {
+  computeCustomBucketMetrics,
   computeTopNIndexMetrics,
+  getTopNSymbolsFromConstituents,
   type IndexPortfolioRule,
   type PortfolioSettings,
+  type RestDistribution,
 } from '../lib/portfolio-settings'
-import type { BenchmarkIndex } from '../types'
+import type { BenchmarkIndex, Holding, IndexConstituent } from '../types'
 import { formatPct, portfolioTopNWeight } from '../lib/portfolio'
 
-import type { Holding, IndexConstituent } from '../types'
-
 const BENCHMARK_INDEXES: BenchmarkIndex[] = ['KMI30', 'KSE100']
+
+function CustomBucketSection({
+  rule,
+  holdings,
+  topNSymbols,
+  onChange,
+}: {
+  rule: IndexPortfolioRule
+  holdings: Holding[]
+  topNSymbols: Set<string>
+  onChange: (patch: Partial<IndexPortfolioRule>) => void
+}) {
+  const metrics = useMemo(
+    () => computeCustomBucketMetrics(holdings, rule, topNSymbols),
+    [holdings, rule, topNSymbols],
+  )
+
+  const setCustomWeight = (symbol: string, value: number) => {
+    onChange({
+      customRestWeights: { ...rule.customRestWeights, [symbol]: value },
+    })
+  }
+
+  const customSum = metrics.symbols.reduce(
+    (sum, sym) => sum + (rule.customRestWeights[sym] ?? 0),
+    0,
+  )
+
+  return (
+    <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium text-slate-300">Custom portfolio bucket</p>
+        <div className="flex gap-1">
+          {(['equal', 'custom'] as RestDistribution[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => onChange({ restDistribution: mode })}
+              className={`rounded px-2 py-1 text-xs capitalize ${
+                rule.restDistribution === mode
+                  ? 'bg-emerald-600 text-white'
+                  : 'border border-slate-700 text-slate-400'
+              }`}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <p className="text-xs text-slate-500">
+        Remaining {formatPct(100 - rule.topNBudgetPct, 0)} split across{' '}
+        <span className="text-slate-300">{metrics.symbolCount}</span> owned holding(s) outside top{' '}
+        {rule.topNCount} (includes off-index).
+        {metrics.symbolCount > 0 && rule.restDistribution === 'equal' && (
+          <span className="text-emerald-400">
+            {' '}
+            → {metrics.equalWeightPct.toFixed(2)}% each
+          </span>
+        )}
+      </p>
+
+      {metrics.symbolCount === 0 ? (
+        <p className="text-xs text-slate-500">No custom holdings yet — add positions outside top N.</p>
+      ) : rule.restDistribution === 'custom' ? (
+        <div className="space-y-2">
+          {metrics.symbols.map((symbol) => (
+            <label key={symbol} className="flex items-center gap-2 text-sm">
+              <span className="w-16 font-medium text-slate-300">{symbol}</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={0.1}
+                value={rule.customRestWeights[symbol] ?? 0}
+                onChange={(e) => setCustomWeight(symbol, Number(e.target.value))}
+                className="w-24 rounded border border-slate-700 bg-slate-950 px-2 py-1"
+              />
+              <span className="text-slate-500">% of remainder</span>
+            </label>
+          ))}
+          <p
+            className={`text-xs ${Math.abs(customSum - 100) < 0.01 ? 'text-emerald-400' : 'text-amber-400'}`}
+          >
+            Weights sum: {customSum.toFixed(1)}% (target 100%)
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {metrics.symbols.map((symbol) => (
+            <span
+              key={symbol}
+              className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-200"
+            >
+              {symbol}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function IndexRuleCard({
   indexCode,
@@ -32,8 +135,11 @@ function IndexRuleCard({
     [constituents, rule.topNCount],
   )
 
-  const topSymbols = useMemo(() => new Set(metrics.symbols), [metrics.symbols])
-  const yourTopNWeight = portfolioTopNWeight(holdings, topSymbols)
+  const topNSymbols = useMemo(
+    () => getTopNSymbolsFromConstituents(constituents, rule.topNCount),
+    [constituents, rule.topNCount],
+  )
+  const yourTopNWeight = portfolioTopNWeight(holdings, topNSymbols)
 
   return (
     <Card title={indexLabel(indexCode)}>
@@ -73,34 +179,21 @@ function IndexRuleCard({
                 <p className="text-lg font-semibold text-emerald-400">
                   {metrics.indexWeightPct.toFixed(2)}%
                 </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  Combined weight of the largest {rule.topNCount} in {indexLabel(indexCode)}
-                </p>
               </div>
               <div>
                 <p className="text-xs text-slate-500">Your portfolio in top {rule.topNCount}</p>
                 <p className="text-lg font-semibold text-slate-200">
                   {yourTopNWeight.toFixed(2)}%
                 </p>
-                <p className="mt-1 text-xs text-slate-500">Current holdings concentration</p>
               </div>
             </div>
 
-            <div>
-              <p className="mb-2 text-xs text-slate-500">
-                Top {rule.topNCount} symbols ({metrics.indexWeightPct.toFixed(1)}% of index)
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {metrics.symbols.map((symbol) => (
-                  <span
-                    key={symbol}
-                    className="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs font-medium text-slate-300"
-                  >
-                    {symbol}
-                  </span>
-                ))}
-              </div>
-            </div>
+            <CustomBucketSection
+              rule={rule}
+              holdings={holdings}
+              topNSymbols={topNSymbols}
+              onChange={onChange}
+            />
           </>
         )}
       </div>
@@ -150,10 +243,6 @@ export function SettingsPage() {
   if (loading) return <LoadingState />
 
   const primaryRule = draft.rules[draft.primaryIndex]
-  const primaryMetrics = computeTopNIndexMetrics(
-    constituentsByIndex[draft.primaryIndex],
-    primaryRule.topNCount,
-  )
 
   return (
     <div className="space-y-6">
@@ -161,7 +250,8 @@ export function SettingsPage() {
         <div>
           <h2 className="text-xl font-semibold">Settings</h2>
           <p className="text-sm text-slate-400">
-            Configure portfolio concentration rules per index. The planner uses your primary index.
+            Top N gets a budget share; the remainder goes to your other holdings (including
+            off-index).
           </p>
         </div>
         <button
@@ -199,13 +289,17 @@ export function SettingsPage() {
           ))}
         </div>
         <p className="mt-3 text-sm text-slate-400">
-          Investment planner targets{' '}
-          <span className="text-slate-200">{indexLabel(draft.primaryIndex)}</span> with{' '}
-          <span className="text-slate-200">{formatPct(primaryRule.topNBudgetPct, 0)}</span> of
-          each budget in the top{' '}
-          <span className="text-slate-200">{primaryRule.topNCount}</span> (covering{' '}
-          <span className="text-emerald-400">{primaryMetrics.indexWeightPct.toFixed(1)}%</span> of
-          the index).
+          {formatPct(primaryRule.topNBudgetPct, 0)} to top {primaryRule.topNCount} ·{' '}
+          {formatPct(100 - primaryRule.topNBudgetPct, 0)} to custom holdings (
+          {computeCustomBucketMetrics(
+            holdings,
+            primaryRule,
+            getTopNSymbolsFromConstituents(
+              constituentsByIndex[draft.primaryIndex],
+              primaryRule.topNCount,
+            ),
+          ).symbolCount}{' '}
+          symbols)
         </p>
       </Card>
 

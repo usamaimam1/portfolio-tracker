@@ -49,21 +49,26 @@ netlify dev
    - `VITE_SUPABASE_ANON_KEY`
    - `SUPABASE_URL` (same project URL)
    - `SUPABASE_SERVICE_ROLE_KEY` (Site settings → Environment variables — **never** prefix with `VITE_`)
+   - `CRON_SECRET` — for scheduled open/close sync
 
-The sync endpoint is `POST /api/sync-indexes` (rewritten to the Netlify function). The service role key is only used server-side in that function.
+The sync endpoint is `POST /api/sync-indexes` (rewritten to the Netlify function). Scheduled jobs run `scheduled-sync-open` (~9:30 PKT) and `scheduled-sync-close` (~3:30 PKT) on weekdays.
 
-### Optional: Supabase Edge Function
+### Database migrations
 
-`supabase/functions/sync-indexes` is kept for reference but **cannot fetch PSX** from Supabase’s network (HTTP 462). Use the Netlify function for production sync.
+Run all files in `supabase/migrations/` through `009_daily_reports.sql` (006–009 are new).
 
 ## Features
 
+- **Custom portfolio bucket** — remainder % split across your holdings outside top N (including off-index); equal or custom weights in Settings
+- **Planner** — toggle to include custom bucket in buy plan
+- **CSV import** — separate purchase/sale import with idempotency (re-uploading the same report is skipped)
+- **Scheduled sync** — KMI30, KSE100, KSE All Share (ALLSHR), KMI All Share at market open/close
+- **Daily reports** — downloadable CSV/JSON in Reports tab; open/close snapshots after scheduled sync
 - **Transactions** — log buys and sells with searchable symbols
 - **Holdings** — computed positions with mark-to-market value
-- **Compare** — your weight % vs index weight % with drift
-- **Shariah tags** — KMI-30 stocks marked compliant
-- **Index sync** — pull KMI-30 & KSE-100 constituents and prices from PSX
-- **SIP planner** — whole-share buy suggestions
+- **Compare** — actual vs preferred target weights with drift
+- **Shariah tags** — KMI All Share listings marked compliant
+- **Index sync** — manual or scheduled pull from PSX
 
 ## Pages
 
@@ -71,6 +76,9 @@ The sync endpoint is `POST /api/sync-indexes` (rewritten to the Netlify function
 |-------|-------------|
 | `/` | Dashboard overview |
 | `/portfolio` | Holdings table |
-| `/transactions` | Add/view trades |
+| `/transactions` | Manual entry + CSV import |
 | `/compare` | Index comparison |
+| `/planner` | SIP planner with custom bucket toggle |
+| `/settings` | Top N + custom bucket rules |
 | `/indexes` | Sync PSX data |
+| `/reports` | Downloadable reports + snapshot history |

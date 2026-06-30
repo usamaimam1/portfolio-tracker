@@ -9,6 +9,7 @@ const nav = [
   { to: '/planner', label: 'Planner' },
   { to: '/settings', label: 'Settings' },
   { to: '/indexes', label: 'Index Data' },
+  { to: '/reports', label: 'Reports' },
 ]
 
 export function Layout() {

@@ -8,6 +8,7 @@ import { LoginPage } from './pages/LoginPage'
 import { PlannerPage } from './pages/PlannerPage'
 import { PortfolioPage } from './pages/PortfolioPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { ReportsPage } from './pages/ReportsPage'
 import { TransactionsPage } from './pages/TransactionsPage'
 import { LoadingState } from './components/ui'
 
@@ -28,6 +29,7 @@ function ProtectedRoutes() {
         <Route path="planner" element={<PlannerPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="indexes" element={<IndexesPage />} />
+        <Route path="reports" element={<ReportsPage />} />
       </Route>
     </Routes>
   )

@@ -2,7 +2,7 @@ export type BenchmarkIndex = 'KMI30' | 'KSE100'
 export type ListingIndex = 'ALLSHR' | 'KMIALLSHR'
 export type IndexCode = BenchmarkIndex | ListingIndex
 
-export type SyncMode = 'benchmark' | 'listings'
+export type SyncMode = 'benchmark' | 'listings' | 'full'
 
 export type TransactionType = 'buy' | 'sell'
 
@@ -17,6 +17,20 @@ export interface Transaction {
   trade_date: string
   notes: string | null
   created_at: string
+  market?: string | null
+  house_account?: string | null
+  commission_amount?: number
+  cvt_wht?: number
+  secp_laga?: number
+  psx_laga?: number
+  sales_tax?: number
+  nccpl?: number
+  advance_tax?: number
+  cdc_charges?: number
+  gross_amount?: number | null
+  source?: 'manual' | 'csv'
+  import_batch_id?: string | null
+  row_fingerprint?: string | null
 }
 
 export interface StockPrice {
@@ -80,6 +94,7 @@ export interface ComparisonRow {
   owned: boolean
   shariahCompliant: boolean
   inTopN: boolean
+  inCustomBucket: boolean
 }
 
 export interface PortfolioSummary {
@@ -125,6 +140,45 @@ export interface ShareBuyPlan {
     portfolioTopNWeightPct: number
     plannedTopNSpendPct: number
   }
+  customMetrics?: {
+    restBudgetPct: number
+    symbolCount: number
+    plannedCustomSpendPct: number
+    includeCustomHoldings: boolean
+  }
+}
+
+export interface PortfolioDailySnapshot {
+  id: string
+  user_id: string
+  snapshot_date: string
+  session: 'open' | 'close'
+  total_value: number
+  total_cost: number
+  unrealized_pnl: number
+  holdings: unknown[]
+  index_metrics: Record<string, unknown>
+  preferred_metrics: Record<string, unknown>
+  created_at: string
+}
+
+export interface UserReportSettings {
+  user_id: string
+  email_reports_enabled: boolean
+  email_address: string | null
+  updated_at: string
+}
+
+export interface SyncRun {
+  id: string
+  triggered_by: string
+  session: 'open' | 'close' | 'manual' | null
+  mode: string
+  status: string
+  counts: Record<string, number> | null
+  error: string | null
+  started_at: string
+  finished_at: string | null
 }
 
 export interface ParsedConstituent {

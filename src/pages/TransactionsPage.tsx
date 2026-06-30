@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { SymbolCombobox } from '../components/SymbolCombobox'
 import { SortableTh } from '../components/SortableTh'
 import { Card, EmptyState, ErrorBanner, LoadingState } from '../components/ui'
 import { usePortfolioContext } from '../context/PortfolioContext'
 import { useTableSort } from '../hooks/useTableSort'
-import { formatPkr, formatQty } from '../lib/portfolio'
+import { parseBrokerCsv } from '../lib/csv-import'
+import { formatPkr, formatQty, userTransactionFees } from '../lib/portfolio'
 import type { Transaction, TransactionType } from '../types'
 
 type TxSortKey = 'date' | 'symbol' | 'type' | 'quantity' | 'price' | 'total'
@@ -15,15 +16,20 @@ const txAccessors: Record<TxSortKey, (tx: Transaction) => string | number> = {
   type: (tx) => tx.type,
   quantity: (tx) => tx.quantity,
   price: (tx) => tx.price_per_share,
-  total: (tx) => tx.quantity * tx.price_per_share + (tx.fees ?? 0),
+  total: (tx) => tx.quantity * tx.price_per_share + userTransactionFees(tx),
 }
 
 export function TransactionsPage() {
-  const { transactions, prices, loading, error, addTransaction, deleteTransaction } =
+  const { transactions, prices, loading, error, addTransaction, deleteTransaction, importCsvTransactions } =
     usePortfolioContext()
   const { sortKey, sortDir, toggle, sort } = useTableSort<TxSortKey>('date', 'desc')
   const [formError, setFormError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [importMessage, setImportMessage] = useState<string | null>(null)
+  const [importPreview, setImportPreview] = useState<ReturnType<typeof parseBrokerCsv> | null>(null)
+  const [importType, setImportType] = useState<TransactionType>('buy')
+  const [pendingFile, setPendingFile] = useState<{ text: string; name: string } | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
 
   const [symbol, setSymbol] = useState('')
   const [type, setType] = useState<TransactionType>('buy')
@@ -90,6 +96,36 @@ export function TransactionsPage() {
     setSubmitting(false)
   }
 
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const text = await file.text()
+    const parsed = parseBrokerCsv(text)
+    setPendingFile({ text, name: file.name })
+    setImportPreview(parsed)
+    setImportMessage(null)
+    e.target.value = ''
+  }
+
+  const confirmImport = async () => {
+    if (!pendingFile) return
+    setSubmitting(true)
+    setImportMessage(null)
+    const result = await importCsvTransactions(pendingFile.text, importType, pendingFile.name)
+    setSubmitting(false)
+
+    if (result.skipped) {
+      setImportMessage(result.message ?? 'Report already imported.')
+    } else if (result.error && result.imported === 0) {
+      setFormError(result.error)
+    } else {
+      setImportMessage(result.message ?? `Imported ${result.imported} rows.`)
+      if (result.error) setImportMessage((m) => `${m} Warnings: ${result.error}`)
+      setImportPreview(null)
+      setPendingFile(null)
+    }
+  }
+
   if (loading) return <LoadingState />
 
   return (
@@ -97,15 +133,70 @@ export function TransactionsPage() {
       <div>
         <h2 className="text-xl font-semibold">Transactions</h2>
         <p className="text-sm text-slate-400">
-          Log buys and sells. Symbols come from your latest PSX index sync.
+          Log buys and sells manually or import broker CSV reports (idempotent — same file won&apos;t import twice).
         </p>
       </div>
 
       {(error || formError) && <ErrorBanner message={formError ?? error ?? ''} />}
+      {importMessage && <p className="text-sm text-emerald-400">{importMessage}</p>}
+
+      <Card title="Import broker CSV">
+        <p className="mb-3 text-xs text-slate-500">
+          Columns: Scrip, Market (Ready), House A/c, Quantity, Rate, Comm. Amount, CVT/WHT, Secp Laga,
+          PSX Laga, Sales Tax, NCCPL, Advance Tax, CDC Charges, Amount.
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="block text-sm">
+            <span className="text-slate-400">Report type</span>
+            <select
+              value={importType}
+              onChange={(e) => setImportType(e.target.value as TransactionType)}
+              className="mt-1 block rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+            >
+              <option value="buy">Purchases</option>
+              <option value="sell">Sales</option>
+            </select>
+          </label>
+          <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={handleFileSelect} />
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            className="rounded-lg border border-slate-600 px-4 py-2 text-sm hover:bg-slate-800"
+          >
+            Choose CSV
+          </button>
+          {pendingFile && (
+            <button
+              type="button"
+              disabled={submitting || !importPreview?.rows.length}
+              onClick={confirmImport}
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
+            >
+              {submitting ? 'Importing…' : `Import ${importPreview?.rows.length ?? 0} ${importType}(s)`}
+            </button>
+          )}
+        </div>
+
+        {importPreview && (
+          <div className="mt-4 space-y-2 text-sm">
+            <p className="text-slate-400">
+              {pendingFile?.name}: {importPreview.rows.length} valid row(s)
+              {importPreview.errors.length > 0 && (
+                <span className="text-amber-400"> · {importPreview.errors.length} skipped</span>
+              )}
+            </p>
+            {importPreview.errors.slice(0, 5).map((err) => (
+              <p key={`${err.row}-${err.message}`} className="text-xs text-amber-400">
+                Row {err.row}: {err.message}
+              </p>
+            ))}
+          </div>
+        )}
+      </Card>
 
       <Card title="Add transaction">
         {symbolOptions.length === 0 ? (
-          <EmptyState message="No symbols loaded yet. Sync KMI-30 & KSE-100 from the Dashboard or Index Data page." />
+          <EmptyState message="No symbols loaded yet. Sync indexes from Index Data." />
         ) : (
           <form onSubmit={handleSubmit} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <label className="block sm:col-span-2 lg:col-span-1">
@@ -151,7 +242,6 @@ export function TransactionsPage() {
                 onChange={(e) => setPrice(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
               />
-              <p className="mt-1 text-xs text-slate-500">Pre-filled from sync; edit to your execution price.</p>
             </label>
             <label className="block">
               <span className="text-sm text-slate-400">Fees (PKR)</span>
@@ -209,12 +299,13 @@ export function TransactionsPage() {
                   <SortableTh label="Qty" sortKey="quantity" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
                   <SortableTh label="Price" sortKey="price" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
                   <SortableTh label="Total" sortKey="total" activeKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <th className="pb-2">Source</th>
                   <th className="pb-2"></th>
                 </tr>
               </thead>
               <tbody>
                 {sortedTransactions.map((tx) => {
-                  const total = tx.quantity * tx.price_per_share + (tx.fees ?? 0)
+                  const total = tx.quantity * tx.price_per_share + userTransactionFees(tx)
                   return (
                     <tr key={tx.id} className="border-t border-slate-800">
                       <td className="py-2.5 text-slate-400">{tx.trade_date}</td>
@@ -233,6 +324,7 @@ export function TransactionsPage() {
                       <td className="py-2.5 text-right">{formatQty(tx.quantity)}</td>
                       <td className="py-2.5 text-right">{formatPkr(tx.price_per_share)}</td>
                       <td className="py-2.5 text-right">{formatPkr(total)}</td>
+                      <td className="py-2.5 text-xs text-slate-500">{tx.source ?? 'manual'}</td>
                       <td className="py-2.5 text-right">
                         <button
                           onClick={() => deleteTransaction(tx.id)}

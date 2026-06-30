@@ -9,26 +9,42 @@ import { getPlannerConstraints } from '../lib/portfolio-settings'
 import { formatPct, formatPrice, formatPkr, formatQty } from '../lib/portfolio'
 import type { ShareBuySuggestion } from '../types'
 
-type BuySortKey = 'symbol' | 'shares' | 'price' | 'cost' | 'driftAfter'
+type BuySortKey = 'symbol' | 'shares' | 'price' | 'cost' | 'driftAfter' | 'bucket'
 
-const buyAccessors: Record<BuySortKey, (s: ShareBuySuggestion) => string | number> = {
+const buyAccessors: Record<BuySortKey, (s: ShareBuySuggestion & { bucket: string }) => string | number> = {
   symbol: (s) => s.symbol,
   shares: (s) => s.shares,
   price: (s) => s.pricePerShare,
   cost: (s) => s.totalCost,
   driftAfter: (s) => s.driftAfter,
+  bucket: (s) => s.bucket,
 }
 
 export function PlannerPage() {
-  const { loading, suggestInvest, portfolioSettings } = usePortfolioContext()
+  const { loading, suggestInvest, portfolioSettings, primaryComparison } = usePortfolioContext()
   const [investAmount, setInvestAmount] = useState(50000)
-  const buyPlan = suggestInvest(investAmount)
+  const [includeCustomHoldings, setIncludeCustomHoldings] = useState(false)
+  const buyPlan = suggestInvest(investAmount, includeCustomHoldings)
   const buySort = useTableSort<BuySortKey>('cost', 'desc')
   const constraints = getPlannerConstraints(portfolioSettings)
 
+  const customSymbolSet = useMemo(
+    () => new Set(primaryComparison.filter((r) => r.inCustomBucket).map((r) => r.symbol)),
+    [primaryComparison],
+  )
+
+  const enrichedBuys = useMemo(
+    () =>
+      buyPlan.suggestions.map((s) => ({
+        ...s,
+        bucket: customSymbolSet.has(s.symbol) ? 'Custom' : 'Top N',
+      })),
+    [buyPlan.suggestions, customSymbolSet],
+  )
+
   const sortedBuys = useMemo(
-    () => buySort.sort(buyPlan.suggestions, buyAccessors),
-    [buyPlan.suggestions, buySort.sort],
+    () => buySort.sort(enrichedBuys, buyAccessors),
+    [enrichedBuys, buySort.sort],
   )
 
   if (loading) return <LoadingState />
@@ -53,45 +69,67 @@ export function PlannerPage() {
             <p className="text-lg font-semibold text-slate-200">
               Top {buyPlan.topNMetrics.topNCount} · {buyPlan.topNMetrics.topNBudgetPct}%
             </p>
-            <p className="mt-1 text-xs text-slate-500">Budget share for largest constituents</p>
           </Card>
           <Card title="Index concentration">
             <p className="text-lg font-semibold text-emerald-400">
               {buyPlan.topNMetrics.indexTopNWeightPct.toFixed(1)}%
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              Top {buyPlan.topNMetrics.topNCount} weight in {indexLabel(portfolioSettings.primaryIndex)}
             </p>
           </Card>
           <Card title="Your portfolio">
             <p className="text-lg font-semibold text-slate-200">
               {buyPlan.topNMetrics.portfolioTopNWeightPct.toFixed(1)}%
             </p>
-            <p className="mt-1 text-xs text-slate-500">Current holdings in top N</p>
           </Card>
           <Card title="This plan">
             <p className="text-lg font-semibold text-amber-400">
               {buyPlan.topNMetrics.plannedTopNSpendPct.toFixed(1)}%
             </p>
-            <p className="mt-1 text-xs text-slate-500">
-              Spend going to top {constraints.topNCount} (target {constraints.topNBudgetPct}%)
-            </p>
+            <p className="mt-1 text-xs text-slate-500">Spend to top N</p>
           </Card>
         </div>
       )}
 
+      {buyPlan.customMetrics && (
+        <Card title="Custom portfolio bucket">
+          <p className="text-sm text-slate-400">
+            Remainder budget: {buyPlan.customMetrics.restBudgetPct}% across{' '}
+            {buyPlan.customMetrics.symbolCount} holding(s).
+            {includeCustomHoldings ? (
+              <span className="text-emerald-400">
+                {' '}
+                Planned custom spend: {buyPlan.customMetrics.plannedCustomSpendPct.toFixed(1)}%
+              </span>
+            ) : (
+              <span className="text-slate-500"> Enable the toggle below to include in this plan.</span>
+            )}
+          </p>
+        </Card>
+      )}
+
       <Card title={`Invest this month (${indexLabel(portfolioSettings.primaryIndex)} · whole shares)`}>
-        <label className="block text-sm text-slate-400">
-          Budget (PKR)
-          <input
-            type="number"
-            min={0}
-            step={1000}
-            value={investAmount}
-            onChange={(e) => setInvestAmount(Number(e.target.value))}
-            className="mt-1 w-full max-w-xs rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
-          />
-        </label>
+        <div className="space-y-4">
+          <label className="block text-sm text-slate-400">
+            Budget (PKR)
+            <input
+              type="number"
+              min={0}
+              step={1000}
+              value={investAmount}
+              onChange={(e) => setInvestAmount(Number(e.target.value))}
+              className="mt-1 w-full max-w-xs rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            />
+          </label>
+
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={includeCustomHoldings}
+              onChange={(e) => setIncludeCustomHoldings(e.target.checked)}
+              className="rounded border-slate-600"
+            />
+            Include custom portfolio holdings ({100 - constraints.topNBudgetPct}% remainder bucket)
+          </label>
+        </div>
 
         {buyPlan.suggestions.length === 0 ? (
           <p className="mt-4 text-sm text-slate-400">
@@ -114,17 +152,12 @@ export function PlannerPage() {
               </div>
             </div>
 
-            <p className="text-xs text-slate-500">
-              Whole shares only. {constraints.topNBudgetPct}% of budget targets the top{' '}
-              {constraints.topNCount} {indexLabel(portfolioSettings.primaryIndex)} names; the rest
-              spreads across other index stocks.
-            </p>
-
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[520px] text-sm">
+              <table className="w-full min-w-[560px] text-sm">
                 <thead>
                   <tr className="text-left text-slate-500">
                     <SortableTh label="Buy" sortKey="symbol" activeKey={buySort.sortKey} sortDir={buySort.sortDir} onSort={buySort.toggle} />
+                    <SortableTh label="Bucket" sortKey="bucket" activeKey={buySort.sortKey} sortDir={buySort.sortDir} onSort={buySort.toggle} />
                     <SortableTh label="Shares" sortKey="shares" activeKey={buySort.sortKey} sortDir={buySort.sortDir} onSort={buySort.toggle} align="right" />
                     <SortableTh label="Price" sortKey="price" activeKey={buySort.sortKey} sortDir={buySort.sortDir} onSort={buySort.toggle} align="right" />
                     <SortableTh label="Cost" sortKey="cost" activeKey={buySort.sortKey} sortDir={buySort.sortDir} onSort={buySort.toggle} align="right" />
@@ -138,6 +171,17 @@ export function PlannerPage() {
                         <span className="font-medium">{s.symbol}</span>
                         <span className="ml-1 text-slate-500">{s.name}</span>
                       </td>
+                      <td className="py-2">
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-xs ${
+                            s.bucket === 'Custom'
+                              ? 'bg-amber-500/20 text-amber-300'
+                              : 'bg-emerald-500/20 text-emerald-300'
+                          }`}
+                        >
+                          {s.bucket}
+                        </span>
+                      </td>
                       <td className="py-2 text-right font-medium text-emerald-300">
                         {formatQty(s.shares)}
                       </td>
@@ -145,17 +189,7 @@ export function PlannerPage() {
                         {formatPrice(s.pricePerShare)}
                       </td>
                       <td className="py-2 text-right">{formatPkr(s.totalCost)}</td>
-                      <td
-                        className={`py-2 text-right ${
-                          s.driftAfter < -0.25
-                            ? 'text-amber-400'
-                            : s.driftAfter > 0.25
-                              ? 'text-sky-400'
-                              : 'text-emerald-400'
-                        }`}
-                      >
-                        {formatPct(s.driftAfter)}
-                      </td>
+                      <td className="py-2 text-right">{formatPct(s.driftAfter)}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -20,6 +20,8 @@ export function IndexesPage() {
     syncing,
     syncIndexes,
     syncListings,
+    syncAll,
+    syncRuns,
     error,
     prices,
     loading,
@@ -69,8 +71,22 @@ export function IndexesPage() {
           >
             {syncing === 'listings' ? 'Syncing listings…' : 'Sync All Share listings'}
           </button>
+          <button
+            onClick={() => syncAll()}
+            disabled={syncing !== null}
+            className="rounded-lg border border-emerald-600/50 px-4 py-2 text-sm font-medium text-emerald-300 hover:bg-emerald-950 disabled:opacity-50"
+          >
+            {syncing === 'full' ? 'Syncing all…' : 'Sync all 4 indices'}
+          </button>
         </div>
       </div>
+
+      {syncRuns[0] && (
+        <p className="text-xs text-slate-500">
+          Last job: {syncRuns[0].triggered_by} · {syncRuns[0].status} ·{' '}
+          {new Date(syncRuns[0].started_at).toLocaleString()}
+        </p>
+      )}
 
       {error && <ErrorBanner message={error} />}
 

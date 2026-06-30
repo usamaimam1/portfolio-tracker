@@ -1,6 +1,10 @@
 import type { PlannerConstraints } from './portfolio-settings'
 import type { IndexPortfolioRule } from './portfolio-settings'
-import { buildPreferredWeights } from './portfolio-settings'
+import {
+  buildPreferredWeights,
+  getCustomBucketSymbols,
+  getTopNSymbolsFromConstituents,
+} from './portfolio-settings'
 import type {
   ComparisonRow,
   ComplianceFilter,
@@ -49,6 +53,16 @@ export function buildShariahSymbolSet(symbols: Iterable<string>): Set<string> {
   return new Set([...symbols].map(normalizeSymbol))
 }
 
+export function userTransactionFees(tx: Transaction): number {
+  return (
+    parseNum(tx.fees ?? 0) ||
+    parseNum(tx.cvt_wht ?? 0) +
+      parseNum(tx.sales_tax ?? 0) +
+      parseNum(tx.cdc_charges ?? 0) +
+      parseNum(tx.advance_tax ?? 0)
+  )
+}
+
 export function computeHoldings(
   transactions: Transaction[],
   prices: Map<string, StockPrice>,
@@ -64,7 +78,7 @@ export function computeHoldings(
     const symbol = normalizeSymbol(tx.symbol)
     const qty = parseNum(tx.quantity)
     const price = parseNum(tx.price_per_share)
-    const fees = parseNum(tx.fees ?? 0)
+    const fees = userTransactionFees(tx)
     const current = state.get(symbol) ?? { qty: 0, totalCost: 0 }
 
     if (tx.type === 'buy') {
@@ -171,21 +185,23 @@ export function buildComparison(
   const holdingMap = new Map(holdings.map((h) => [h.symbol, h]))
   const totalPortfolio = holdings.reduce((s, h) => s + h.marketValue, 0)
 
-  const preferredWeights = rule ? buildPreferredWeights(constituents, rule) : null
+  const preferredWeights = rule ? buildPreferredWeights(constituents, rule, holdings) : null
   const topNSymbols = rule
-    ? new Set(
-        [...constituents]
-          .sort((a, b) => parseNum(b.weight_pct) - parseNum(a.weight_pct))
-          .slice(0, rule.topNCount)
-          .map((c) => normalizeSymbol(c.symbol)),
-      )
+    ? getTopNSymbolsFromConstituents(constituents, rule.topNCount)
+    : new Set<string>()
+  const customSymbols = rule
+    ? new Set(getCustomBucketSymbols(holdings, topNSymbols))
     : new Set<string>()
 
   const rows: ComparisonRow[] = constituents.map((c) => {
     const symbol = normalizeSymbol(c.symbol)
     const holding = holdingMap.get(symbol)
     const actualIndexWeight = parseNum(c.weight_pct)
-    const preferredIndexWeight = preferredWeights?.get(symbol) ?? actualIndexWeight
+    const preferredIndexWeight = preferredWeights?.has(symbol)
+      ? (preferredWeights.get(symbol) ?? 0)
+      : preferredWeights
+        ? 0
+        : actualIndexWeight
     const portfolioWeight =
       holding && totalPortfolio > 0 ? (holding.marketValue / totalPortfolio) * 100 : 0
     const actualDrift = portfolioWeight - actualIndexWeight
@@ -207,6 +223,7 @@ export function buildComparison(
       owned: !!holding,
       shariahCompliant: isShariahCompliant(symbol, prices, shariahSymbols),
       inTopN: topNSymbols.has(symbol),
+      inCustomBucket: customSymbols.has(symbol),
     }
   })
 
@@ -214,22 +231,25 @@ export function buildComparison(
   const indexSymbols = new Set(constituents.map((c) => normalizeSymbol(c.symbol)))
   for (const h of holdings) {
     if (!indexSymbols.has(h.symbol)) {
+      const preferredIndexWeight = preferredWeights?.get(h.symbol) ?? 0
+      const preferredDrift = h.portfolioWeight - preferredIndexWeight
       rows.push({
         symbol: h.symbol,
         name: h.symbol,
         indexWeight: 0,
         actualIndexWeight: 0,
-        preferredIndexWeight: 0,
+        preferredIndexWeight,
         portfolioWeight: h.portfolioWeight,
         drift: h.portfolioWeight,
         actualDrift: h.portfolioWeight,
-        preferredDrift: h.portfolioWeight,
+        preferredDrift,
         quantity: h.quantity,
         marketValue: h.marketValue,
         indexPrice: h.currentPrice ?? 0,
         owned: true,
         shariahCompliant: h.shariahCompliant,
         inTopN: false,
+        inCustomBucket: customSymbols.has(h.symbol),
       })
     }
   }
@@ -270,11 +290,8 @@ export function portfolioTopNWeight(holdings: Holding[], topSymbols: Set<string>
   return (topValue / total) * 100
 }
 
-function getTopNSymbols(comparison: ComparisonRow[], topNCount: number): Set<string> {
-  const ranked = [...comparison]
-    .filter((r) => r.indexWeight > 0)
-    .sort((a, b) => b.indexWeight - a.indexWeight)
-  return new Set(ranked.slice(0, topNCount).map((r) => r.symbol))
+function getTopNSymbols(comparison: ComparisonRow[]): Set<string> {
+  return new Set(comparison.filter((r) => r.inTopN).map((r) => r.symbol))
 }
 
 function allocateShareBuys(
@@ -425,6 +442,7 @@ export function suggestShareBuys(
   constraints?: PlannerConstraints,
   holdings: Holding[] = [],
   indexTopNWeightPct = 0,
+  includeCustomHoldings = false,
 ): ShareBuyPlan {
   const empty = (message?: string): ShareBuyPlan => ({
     budget,
@@ -436,53 +454,67 @@ export function suggestShareBuys(
 
   if (budget <= 0) return empty('Enter an investment amount.')
 
-  const pool = comparison.filter(
+  const preferredComparison = withWeightMode(comparison, 'preferred')
+  const weightLookup = new Map(preferredComparison.map((r) => [r.symbol, r]))
+
+  const poolBase = preferredComparison.filter(
     (r) => r.indexWeight > 0 && r.indexPrice > 0 && (!shariahOnly || r.shariahCompliant),
   )
-  if (pool.length === 0) {
+  if (poolBase.length === 0) {
     return empty('Sync indexes from PSX to get stock prices and weights.')
   }
+
+  const withPreferredWeight = (rows: ComparisonRow[]) =>
+    rows.map((r) => {
+      const pref = weightLookup.get(r.symbol)
+      return pref ? { ...r, indexWeight: pref.indexWeight, drift: pref.drift } : r
+    })
 
   let suggestions: ShareBuySuggestion[] = []
   let totalSpend = 0
   let leftover = budget
 
   if (constraints && constraints.topNBudgetPct > 0 && constraints.topNBudgetPct < 100) {
-    const topSymbols = getTopNSymbols(comparison, constraints.topNCount)
-    const topPool = pool.filter((r) => topSymbols.has(r.symbol))
-    const restPool = pool.filter((r) => !topSymbols.has(r.symbol))
+    const topSymbols = getTopNSymbols(comparison)
+    const topPool = withPreferredWeight(poolBase.filter((r) => topSymbols.has(r.symbol)))
+    const customPool = includeCustomHoldings
+      ? withPreferredWeight(poolBase.filter((r) => r.inCustomBucket))
+      : []
 
     const topBudget = budget * (constraints.topNBudgetPct / 100)
-    const restBudget = budget - topBudget
+    const restBudget = includeCustomHoldings ? budget - topBudget : 0
 
-    const topResult = allocateShareBuys(topBudget, comparison, topPool)
-    const restResult = allocateShareBuys(restBudget, comparison, restPool)
+    const topResult = allocateShareBuys(topBudget, preferredComparison, topPool)
+    const customResult =
+      customPool.length > 0
+        ? allocateShareBuys(restBudget, preferredComparison, customPool)
+        : { suggestions: [], totalSpend: 0, leftover: restBudget }
 
-    const currentTotal = comparison.filter((r) => r.owned).reduce((s, r) => s + r.marketValue, 0)
-    totalSpend = topResult.totalSpend + restResult.totalSpend
-    leftover = topResult.leftover + restResult.leftover
+    const currentTotal = preferredComparison.filter((r) => r.owned).reduce((s, r) => s + r.marketValue, 0)
+    totalSpend = topResult.totalSpend + customResult.totalSpend
+    leftover = topResult.leftover + customResult.leftover + (includeCustomHoldings ? 0 : budget - topBudget)
     suggestions = mergeShareSuggestions(
-      [topResult.suggestions, restResult.suggestions],
-      comparison,
+      [topResult.suggestions, customResult.suggestions],
+      preferredComparison,
       currentTotal,
       totalSpend,
     )
   } else if (constraints && constraints.topNBudgetPct >= 100) {
-    const topSymbols = getTopNSymbols(comparison, constraints.topNCount)
-    const topPool = pool.filter((r) => topSymbols.has(r.symbol))
-    const result = allocateShareBuys(budget, comparison, topPool.length > 0 ? topPool : pool)
+    const topSymbols = getTopNSymbols(comparison)
+    const topPool = withPreferredWeight(poolBase.filter((r) => topSymbols.has(r.symbol)))
+    const result = allocateShareBuys(budget, preferredComparison, topPool.length > 0 ? topPool : poolBase)
     suggestions = result.suggestions
     totalSpend = result.totalSpend
     leftover = result.leftover
   } else {
-    const result = allocateShareBuys(budget, comparison, pool)
+    const result = allocateShareBuys(budget, preferredComparison, withPreferredWeight(poolBase))
     suggestions = result.suggestions
     totalSpend = result.totalSpend
     leftover = result.leftover
   }
 
   if (suggestions.length === 0) {
-    const minPrice = Math.min(...pool.map((r) => r.indexPrice))
+    const minPrice = Math.min(...poolBase.map((r) => r.indexPrice))
     if (budget < minPrice) {
       return empty(`Budget is below the cheapest stock (${formatPrice(minPrice)} per share).`)
     }
@@ -491,9 +523,13 @@ export function suggestShareBuys(
 
   const topNCount = constraints?.topNCount ?? 0
   const topNBudgetPct = constraints?.topNBudgetPct ?? 0
-  const topSymbols = constraints ? getTopNSymbols(comparison, topNCount) : new Set<string>()
+  const topSymbols = constraints ? getTopNSymbols(comparison) : new Set<string>()
   const topSpend = suggestions
     .filter((s) => topSymbols.has(s.symbol))
+    .reduce((sum, s) => sum + s.totalCost, 0)
+
+  const customSpend = suggestions
+    .filter((s) => preferredComparison.find((r) => r.symbol === s.symbol)?.inCustomBucket)
     .reduce((sum, s) => sum + s.totalCost, 0)
 
   return {
@@ -508,6 +544,14 @@ export function suggestShareBuys(
           indexTopNWeightPct,
           portfolioTopNWeightPct: portfolioTopNWeight(holdings, topSymbols),
           plannedTopNSpendPct: totalSpend > 0 ? (topSpend / totalSpend) * 100 : 0,
+        }
+      : undefined,
+    customMetrics: constraints
+      ? {
+          restBudgetPct: 100 - topNBudgetPct,
+          symbolCount: preferredComparison.filter((r) => r.inCustomBucket).length,
+          plannedCustomSpendPct: totalSpend > 0 ? (customSpend / totalSpend) * 100 : 0,
+          includeCustomHoldings,
         }
       : undefined,
   }

@@ -2,6 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { invokeSyncIndexes } from '../lib/sync-indexes'
 import {
+  hashFileContent,
+  parseBrokerCsv,
+  toImportPayload,
+  type CsvImportPayload,
+} from '../lib/csv-import'
+import {
   computeTopNIndexMetrics,
   DEFAULT_PORTFOLIO_SETTINGS,
   getPlannerConstraints,
@@ -29,6 +35,9 @@ import type {
   StockPrice,
   SyncMode,
   Transaction,
+  PortfolioDailySnapshot,
+  UserReportSettings,
+  SyncRun,
 } from '../types'
 
 async function loadBenchmarkSymbols(): Promise<Set<string>> {
@@ -136,6 +145,9 @@ export function usePortfolio(userId: string | undefined) {
   const [benchmark, setBenchmark] = useState<BenchmarkIndex>('KMI30')
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState<SyncMode | null>(null)
+  const [snapshots, setSnapshots] = useState<PortfolioDailySnapshot[]>([])
+  const [syncRuns, setSyncRuns] = useState<SyncRun[]>([])
+  const [reportSettings, setReportSettings] = useState<UserReportSettings | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const priceMap = useMemo(() => buildPriceMap(prices), [prices])
@@ -220,7 +232,7 @@ export function usePortfolio(userId: string | undefined) {
     setLoading(true)
     setError(null)
 
-    const [txRes, priceRes, syncRes, kmi30Rows, kse100Rows, benchmarkSymbolSet, shariahSymbolSet, settings] =
+    const [txRes, priceRes, syncRes, kmi30Rows, kse100Rows, benchmarkSymbolSet, shariahSymbolSet, settings, snapshotRes, syncRunRes, reportRes] =
       await Promise.all([
       supabase
         .from('transactions')
@@ -238,6 +250,14 @@ export function usePortfolio(userId: string | undefined) {
       loadBenchmarkSymbols(),
       loadShariahSymbols(),
       loadPortfolioSettings(userId),
+      supabase
+        .from('portfolio_daily_snapshots')
+        .select('*')
+        .eq('user_id', userId)
+        .order('snapshot_date', { ascending: false })
+        .limit(30),
+      supabase.from('sync_runs').select('*').order('started_at', { ascending: false }).limit(10),
+      supabase.from('user_report_settings').select('*').eq('user_id', userId).maybeSingle(),
     ])
 
     if (txRes.error) setError(txRes.error.message)
@@ -256,6 +276,9 @@ export function usePortfolio(userId: string | undefined) {
     setBenchmarkSymbols(benchmarkSymbolSet)
     setShariahSymbols(shariahSymbolSet)
     setPortfolioSettings(settings)
+    setSnapshots((snapshotRes.data as PortfolioDailySnapshot[]) ?? [])
+    setSyncRuns((syncRunRes.data as SyncRun[]) ?? [])
+    setReportSettings((reportRes.data as UserReportSettings) ?? null)
     await loadBenchmark(benchmark)
     setLoading(false)
   }, [userId, benchmark, loadBenchmark])
@@ -278,6 +301,109 @@ export function usePortfolio(userId: string | undefined) {
     })
     if (!insertError) await refresh()
     return { error: insertError?.message ?? null }
+  }
+
+  const importCsvTransactions = async (
+    fileText: string,
+    type: Transaction['type'],
+    filename?: string,
+  ) => {
+    if (!userId) return { error: 'Not signed in', imported: 0, skipped: false }
+
+    const contentHash = await hashFileContent(`${type}\n${fileText}`)
+    const { data: existingBatch } = await supabase
+      .from('transaction_import_batches')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('content_hash', contentHash)
+      .maybeSingle()
+
+    if (existingBatch) {
+      return {
+        error: null,
+        imported: 0,
+        skipped: true,
+        message: 'This report was already imported.',
+      }
+    }
+
+    const parsed = parseBrokerCsv(fileText)
+    if (parsed.errors.length > 0 && parsed.rows.length === 0) {
+      return { error: parsed.errors.map((e) => `Row ${e.row}: ${e.message}`).join('; '), imported: 0, skipped: false }
+    }
+
+    const payloads: CsvImportPayload[] = parsed.rows.map((row) => toImportPayload(type, row))
+
+    const { data: batch, error: batchError } = await supabase
+      .from('transaction_import_batches')
+      .insert({
+        user_id: userId,
+        content_hash: contentHash,
+        transaction_type: type,
+        filename: filename ?? null,
+        row_count: payloads.length,
+      })
+      .select('id')
+      .single()
+
+    if (batchError || !batch) {
+      if (batchError?.code === '23505') {
+        return { error: null, imported: 0, skipped: true, message: 'This report was already imported.' }
+      }
+      return { error: batchError?.message ?? 'Failed to create import batch', imported: 0, skipped: false }
+    }
+
+    const rows = payloads.map((p) => ({
+      ...p,
+      user_id: userId,
+      import_batch_id: batch.id,
+      notes: null,
+    }))
+
+    const { error: insertError } = await supabase.from('transactions').insert(rows)
+
+    if (insertError) {
+      await supabase.from('transaction_import_batches').delete().eq('id', batch.id)
+      if (insertError.code === '23505') {
+        return { error: 'Some rows were already imported.', imported: 0, skipped: true }
+      }
+      return { error: insertError.message, imported: 0, skipped: false }
+    }
+
+    await refresh()
+    return {
+      error: parsed.errors.length > 0 ? parsed.errors.map((e) => `Row ${e.row}: ${e.message}`).join('; ') : null,
+      imported: rows.length,
+      skipped: false,
+      message: `Imported ${rows.length} ${type} transaction(s).`,
+    }
+  }
+
+  const deleteImportBatch = async (batchId: string) => {
+    const { error: deleteError } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('import_batch_id', batchId)
+    if (!deleteError) {
+      await supabase.from('transaction_import_batches').delete().eq('id', batchId)
+      await refresh()
+    }
+    return { error: deleteError?.message ?? null }
+  }
+
+  const saveReportSettings = async (next: Partial<UserReportSettings>) => {
+    if (!userId) return { error: 'Not signed in' }
+    const payload = {
+      user_id: userId,
+      email_reports_enabled: next.email_reports_enabled ?? reportSettings?.email_reports_enabled ?? true,
+      email_address: next.email_address ?? reportSettings?.email_address ?? null,
+      updated_at: new Date().toISOString(),
+    }
+    const { error: upsertError } = await supabase
+      .from('user_report_settings')
+      .upsert(payload, { onConflict: 'user_id' })
+    if (!upsertError) setReportSettings(payload as UserReportSettings)
+    return { error: upsertError?.message ?? null }
   }
 
   const deleteTransaction = async (id: string) => {
@@ -304,6 +430,7 @@ export function usePortfolio(userId: string | undefined) {
 
   const syncIndexes = () => runSync('benchmark')
   const syncListings = () => runSync('listings')
+  const syncAll = () => runSync('full')
 
   const savePortfolioSettings = async (next: PortfolioSettings) => {
     if (!userId) return { error: 'Not signed in' }
@@ -324,7 +451,7 @@ export function usePortfolio(userId: string | undefined) {
     return { error: null }
   }
 
-  const suggestInvest = (amount: number) => {
+  const suggestInvest = (amount: number, includeCustomHoldings = false) => {
     const constraints = getPlannerConstraints(portfolioSettings)
     const constituents = constituentsByIndex[portfolioSettings.primaryIndex]
     const indexTopN = computeTopNIndexMetrics(constituents, constraints.topNCount).indexWeightPct
@@ -336,6 +463,7 @@ export function usePortfolio(userId: string | undefined) {
       constraints,
       holdings,
       indexTopN,
+      includeCustomHoldings,
     )
   }
 
@@ -343,6 +471,9 @@ export function usePortfolio(userId: string | undefined) {
     transactions,
     prices,
     syncs,
+    syncRuns,
+    snapshots,
+    reportSettings,
     constituents,
     shariahSymbols,
     benchmark,
@@ -363,10 +494,14 @@ export function usePortfolio(userId: string | undefined) {
     setBenchmarkIndex,
     addTransaction,
     deleteTransaction,
+    importCsvTransactions,
+    deleteImportBatch,
     syncIndexes,
     syncListings,
+    syncAll,
     suggestInvest,
     savePortfolioSettings,
+    saveReportSettings,
     refresh,
   }
 }
